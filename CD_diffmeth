@@ -1,0 +1,544 @@
+---
+title: "Multiple_samples_BSSeq_analysis"
+author: "Mia Sands"
+date: "2023-01-13"
+output: word_document
+---
+
+In this script, I will extract preliminary methylation data from samples of Crohn's disease patients. I will also identify differentially methylated loci (DML) and differentially methylated regions through pairwise comparisons between treatments.
+
+
+# Install packages
+
+```{r}
+
+require(methylKit) 
+require(dplyr) 
+require(vegan)
+require(gplots)
+require(ggplot2)
+require(dichromat)
+require(scales)
+require(ggrepel)
+require(ggpubr)
+require(biomaRt)
+require(annotatr)
+library(clusterProfiler)
+library(stringr)
+library(ggvenn)
+```
+
+#plotcolors
+
+```{r}
+plotColors1 <- c("#F7FBFF", "#DEEBF7", "#C6DBEF", "#A9DDFF","#9ECAE1", "#6BAED6", "#4292C6", "#2171B5" ,"#08519C" ,"#21ADFA","#08306B" , "#0A72AB", "#004B70") 
+plotColors2 <- c("#08519C", "#21ADFA","#4292C6", "#6BAED6","#A9DDFF" )
+plotColors3 <-c("#B54E00", "#EF6C00","#FFA801", "#FFCB5E", "#DEEBF7","#A9DDFF","#4292C6", "#21ADFA","#08519C")
+```      
+# Process methylation data
+
+```{r}
+analysisFiles <- as.list(dir(path = "./methylation_coverage", full.names = TRUE)) 
+```
+
+```{r}
+#Prepare targets file
+                                                                      # patients
+# 1	NS1_D_CTCGAACA_L002_R1_001.fastq_trimmed_bismark_bt2.bismark.cov.gz	N	D_NS1	
+# 3	NS2_D_ACGGACTT_L002_R1_001.fastq_trimmed_bismark_bt2.bismark.cov.gz	N	D_NS2	
+# 5	NS3_D_CTAAGACC_L002_R1_001.fastq_trimmed_bismark_bt2.bismark.cov.gz	N	D_NS3	
+# 7	S1_D_AACCGAAC_L002_R1_001.fastq_trimmed_bismark_bt2.bismark.cov.gz	S	D_S1	
+# 9	S2_D_CCTTAGGT_L002_R1_001.fastq_trimmed_bismark_bt2.bismark.cov.gz	S	D_S2	
+# 2	NS1_H_CCTATACC_L002_R1_001.fastq_trimmed_bismark_bt2.bismark.cov.gz	N	H_NS1	
+# 4	NS2_H_AACGCCTT_L002_R1_001.fastq_trimmed_bismark_bt2.bismark.cov.gz	N	H_NS2	
+# 6	NS3_H_TCCATTGC_L002_R1_001.fastq_trimmed_bismark_bt2.bismark.cov.gz	N	H_NS3	
+# 8	S1_H_CAAGCCAA_L002_R1_001.fastq_trimmed_bismark_bt2.bismark.cov.gz	S	H_S1	
+# 10	S2_H_AGGTTCCT_L002_R1_001.fastq_trimmed_bismark_bt2.bismark.cov.gz	S	H_S2	
+
+sample <- data.frame("sampleID" = as.list(targets$patients),
+                             "Disease" = c(rep(1, times = 5),
+                                               rep(0, times = 5))) 
+```
+
+
+#Create a methylation object
+
+```{r}
+Files <- methylKit::methRead(analysisFiles,
+                                      sample.id = as.list(targets$patients),
+                                      assembly = "hg38",
+                                      treatment = sampleMetadata$Disease,
+                                      pipeline = "bismarkCoverage",
+                                      mincov = 2) 
+
+FilesCov10 <- methylKit::filterByCoverage(Files,lo.count = 10, high.perc = 99.9) %>%methylKit::normalizeCoverage(.) 
+```
+
+#Descriptive statistics
+
+
+### Create plots
+
+```{r}
+# Supplementary S1
+pdf("general-stats/Descriptive_Statistics-Plot.pdf", height = 15, width = 10)
+layout(matrix(1:10,5,2, byrow = TRUE))
+for(i in 1:n)
+   methylKit::getMethylationStats(processedFilteredFilesCov10[[i]], plot = TRUE, both.strands = FALSE)
+
+# Supplementary S2
+Unitedfiles <- methylKit::unite(FilesCov10, destrand = FALSE) #Only bases present in all samples are kept
+
+jpeg(filename = "general-stats/Full-Sample-Pearson-Correlation-Plot.jpeg", height = 1000, width = 1000) 
+methylKit::getCorrelation(Unitedfiles, plot = TRUE)
+dev.off()
+
+```
+
+
+# Differentially methylated loci
+
+
+#Filter SNPs
+```{r}
+snp <- read.delim2(file = "merged_sorted.SNP.canidate.txt")
+mut <- GRanges(seqnames = snp$X.CHROM, ranges = IRanges(start = snp$POS,end = snp$POS))
+Unitedfiles <- Unitedfiles[!as(Unitedfiles,"GRanges") %over% mut, ]
+```
+
+# subset treatment groups 
+```{r}
+Files_non_surgical = reorganize(FilesCov10, sample.ids = c("D_NS1", "D_NS2", "D_NS3", "H_NS1", "H_NS2","H_NS3"), treatment = c(1,1,1,0,0,0))
+United_non_surgical = reorganize(Unitedfiles,sample.ids = c("D_NS1", "D_NS2", "D_NS3", "H_NS1", "H_NS2","H_NS3"), treatment = c(1,1,1,0,0,0) )
+
+Files_surgical = reorganize(processedFilteredFilesCov10, sample.ids = c("D_S1", "D_S2", "H_S1", "H_S2"), treatment = c(1,1,0,0))
+United_surgical = reorganize(Unitedfiles,sample.ids = c("D_S1", "D_S2", "H_S1", "H_S2"), treatment = c(1,1,0,0) )
+```
+
+#Non-surgical patients & Surgical 
+
+
+#Filter SNPs
+```{r}
+# Identify DML in Non-surgical patients
+differentialMethylation_non_surgical <- methylKit::calculateDiffMeth(United_non_surgical)
+differentialMethylation_surgical <- methylKit::calculateDiffMeth(United_surgical)
+```
+
+
+```{r}
+#Supplementary figure S5
+
+#non-surgical
+differentialMethylation_non_surgical$Methylation <- "Mild"
+# if methylation >= 50 and pvalue <= 0.05, set as "Hyper" 
+differentialMethylation_non_surgical$Methylation[differentialMethylation_non_surgical$meth.diff >= 50 & differentialMethylation_non_surgical$pvalue <= 0.05]  <- "Hyper"
+# if methylation >= 50 and pvalue <= 0.05, set as "Hypo" 
+differentialMethylation_non_surgical$Methylation[differentialMethylation_non_surgical$meth.diff <= -50 & differentialMethylation_non_surgical$pvalue <= 0.05] <- "Hypo"
+
+
+#surgical
+differentialMethylation_surgical$Methylation <- "Mild"
+# if methylation >= 50 and pvalue <= 0.05, set as "Hyper" 
+differentialMethylation_surgical$Methylation[differentialMethylation_surgical$meth.diff >= 50 & differentialMethylation_surgical$pvalue <= 0.05]  <- "Hyper"
+# if methylation >= 50 and pvalue <= 0.05, set as "Hypo" 
+differentialMethylation_surgical$Methylation[differentialMethylation_surgical$meth.diff <= -50 & differentialMethylation_surgical$pvalue <= 0.05] <- "Hypo"
+
+ diffmeth_non_surgical <- ggplot(differentialMethylation_non_surgical, aes(x=meth.diff, y=-log10(pvalue)))  + 
+  geom_point(aes(col = Methylation), size = 2/5)+
+   scale_color_manual(values=c('orange', plotColors1[10],'grey80'))+
+   guides(colour = guide_legend(override.aes = list(size=1.5)))+
+  xlab("Methylation percentage difference")+
+  ylab(expression("-log"[10]*"Pvalue")) +
+  labs(title = "Non-surgical")+
+  theme(panel.grid.major = element_blank(), panel.grid.minor = element_blank(),
+         panel.background = element_blank(), axis.line = element_line(colour = "black"), text = element_text(size = 12), legend.position=c(0.1,0.8))+
+   guides(colour = guide_legend(override.aes = list(size=2.5)))
+      
+    
+diffmethsurgical <-ggplot(differentialMethylation_surgical, aes(x=meth.diff, y=-log10(pvalue)))  + 
+  geom_point(aes(color = Methylation), size = 2/5)+
+  scale_color_manual(values=c('orange', plotColors1[10],'grey80'))+
+  xlab("Methylation percentage difference")+
+  ylab(expression("-log"[10]*"Pvalue")) +
+   labs(title = "Surgical")+
+   theme(panel.grid.major = element_blank(), panel.grid.minor = element_blank(),
+         panel.background = element_blank(), axis.line = element_line(colour = "black"), text = element_text(size = 12), legend.position=c(0.1,0.8))+
+   guides(colour = guide_legend(override.aes = list(size=2.5)))
+
+jpeg("./DML/2023-1-25-diff-meth.jpeg", height = 5, width = 13,quality = 100,res = 300, units = "in")
+ggarrange(diffmeth_non_surgical, diffmethsurgical, 
+          labels = c("(A)", "(B)"),
+          ncol = 2, nrow = 1)
+
+dev.off()
+
+
+```
+
+# get 25%, 50% difference
+```{r}
+#non-sugical
+diffMethStats_non_surgical_25 <- methylKit::getMethylDiff(differentialMethylation_non_surgical, difference = 25, qvalue = 0.01) 
+diffMethStats_non_surgical_50 <- methylKit::getMethylDiff(differentialMethylation_non_surgical, difference = 50, qvalue = 0.01)
+
+#sugical
+diffMethStats_surgical_25 <- methylKit::getMethylDiff(differentialMethylation_surgical, difference = 25, qvalue = 0.01) 
+diffMethStats_surgical_50 <- methylKit::getMethylDiff(differentialMethylation_surgical, difference = 50, qvalue = 0.01)
+```
+
+#Figure 1
+```{r}
+non_surgical_allDataPCA <- PCASamples(United_non_surgical, obj.return = TRUE)
+surgical_allDataPCA <- PCASamples(United__surgical, obj.return = TRUE)
+
+pdf("./DML/2023DML-PCA.pdf", width = 15, height = 7.5)
+
+layout(matrix(1:2,1,2, byrow = TRUE))
+
+###plot for non-surgical data
+fig.non_surgical_allDataPCA <- ordiplot(non_surgical_allDataPCA, choices = c(1, 2), type = "none", display = "sites", cex = 0.5, xlab = "", ylab = "", xaxt = "n", yaxt = "n") 
+points(fig.non_surgical_allDataPCA, "sites", col = c(plotColors1[4], plotColors1[4], plotColors1[4], plotColors1[10],plotColors1[10], plotColors1[10]),pch = c(16,16,16,17,17, 17),cex = 2) 
+ordiellipse(non_surgical_allDataPCA, c(1,1,1,0,0,0), display="sites", kind = "ehull", col=c(plotColors1[4],plotColors1[6]))
+
+fig.surgical_allDataPCA <- ordiplot(surgical_allDataPCA, choices = c(1, 2), type = "none", display = "sites", cex = 0.5, xlab = "", ylab = "", xaxt = "n", yaxt = "n") 
+points(fig.surgical_allDataPCA, "sites", col = c(plotColors[1], plotColors[1], plotColors[3], plotColors[3]),pch = c(18,18,15, 15), cex = 2 ) 
+
+```
+
+
+#Figure 2
+
+```{r}
+#caculate a table with the inforamtion below
+
+# chr  DMLCount geneCount DMLbyGenes chrCpGCounts  DMLbyChrCpG
+# 
+# 1	1	1544	4384	35.21898	182570	0.008457030
+# 12	2	1210	3785	31.96830	133070	0.009092959
+# 16	3	630	2736	23.02632	85522	0.007366526
+# 17	4	826	2305	35.83514	78990	0.010457020
+# 18	5	822	2415	34.03727	91737	0.008960398
+# 19	6	831	2732	30.41728	90141	0.009218890
+
+
+pdf("./DML/2022-non_surgical-DML-and-Gene-Distribution.pdf", height = 5, width = 8) #Save figure
+ ggplot(DMLchrCounts)  + 
+  geom_bar(aes(x=factor(chr, levels = chr), y=DMLbyChrCpG), stat="identity", fill="#6BAED6", color = "#08306B")+
+  geom_line(aes(x=factor(chr, levels = chr), y=geneCount/500000), stat="identity", color = "#08306B",group =1)+
+  geom_point(aes(x=factor(chr, levels = chr), y=geneCount/500000),stat="identity")+
+  labs(x="Chromosome",y="Number DML/CpGs per chromosome")+
+  scale_y_continuous(sec.axis=sec_axis(~.*500000,name="Number of gens per Chromosome"))+
+   theme_light()
+ 
+ pdf("./DML/2022-surgical-DML-and-Gene-Distribution.pdf", height = 5, width = 8) #Save figure
+ggplot(DMLchrCounts_surgical)  + 
+  geom_bar(aes(x=factor(chr, levels = chr), y=DMLbyChrCpG), stat="identity", fill="#FFCB5E", color = "#E38100")+
+  geom_line(aes(x=factor(chr, levels = chr), y=geneCount/500000),stat="identity", color = "#E38100",group =1)+
+  geom_point(aes(x=factor(chr, levels = chr), y=geneCount/500000),stat="identity")+
+  labs(x="Chromosome",y="Number DML/CpGs per chromosome")+
+  scale_y_continuous(sec.axis=sec_axis(~.*500000,name="Number of gens per Chromosome"))+
+   theme_light() 
+ 
+```
+ 
+ 
+### Define DMR by using a tilling widow of size 1000
+
+```{r}
+
+# Non-surgical tilling
+tile_non_surgical=tileMethylCounts(United_non_surgical,win.size=1000,step.size=1000,cov.bases = 2)
+
+#Surgical tilling
+tile_surgical=tileMethylCounts(United__surgical,win.size=1000,step.size=1000,cov.bases = 2)
+
+```
+
+
+#####diffmeth over tilling window
+
+```{r}
+##non_surgical
+differentialMethylation_tiles_filterdSNP_non_surgical <- methylKit::calculateDiffMeth(tile_non_surgical)  
+
+#surgical
+differentialMethylation_tiles_filterdSNP_surgical <- methylKit::calculateDiffMeth(tile_surgical) 
+
+```
+
+### plot DMRs diffmeth
+```{r}
+
+#Supplementary figure S6
+jpeg("./DML/2023-8-8-tilling-diff-meth.jpeg", height = 5, width = 13,quality = 100,res = 300, units = "in")
+#plot
+par(mfrow = c(1, 2))
+plot(differentialMethylationStats_tiles_filterdSNP_non_surgical$meth.diff, -log10(differentialMethylationStats_tiles_filterdSNP_non_surgical$pvalue), 
+     xlab="Methylation percentage difference", ylab ="-Log10 Pvalue", pch = 20, col = ifelse(-log10(differentialMethylationStats_tiles_filterdSNP_non_surgical$pvalue) <5, 'Black', 'Red'))
+#Add multiple white boxes on top of the default black box to manually change the color
+box(col = "white")
+box(which="plot",lty = 'solid', col = 'grey80',bty="L")
+
+
+plot(differentialMethylationStats_tiles_filterdSNP_surgical$meth.diff, -log10(differentialMethylationStats_tiles_filterdSNP_surgical$pvalue), 
+     xlab="Methylation percentage difference", ylab ="-Log10 Pvalue", pch = 20, col = ifelse(-log10(differentialMethylationStats_tiles_filterdSNP_surgical$pvalue) <5, 'Black', 'Red'))
+#Add multiple white boxes on top of the default black box to manually change the color
+box(col = "white")
+box(which="plot",lty = 'solid', col = 'grey80',bty="L")
+
+
+```
+
+
+#Non-surgical DMR annotation
+
+```{r}
+#gene object was created from genecode annotation files
+
+
+myDiff50.tile.NS.gr <- as(diffMethStats_tiles_non_surgical_50,"GRanges")
+
+myDiff50.tile.S.gr <- as(diffMethStats_tiles_surgical_50,"GRanges")
+myDiff50.tile.NS.annot<-annotate_regions(
+    regions = myDiff50.tile.NS.gr,
+    annotations = gene.obj,
+    ignore.strand = TRUE,
+    quiet = FALSE)
+
+myDiff50.tile.S.annot<- annotate_regions(
+    regions = myDiff50.tile.S.gr,
+    annotations = gene.obj,
+    ignore.strand = TRUE,
+    quiet = FALSE)
+
+```
+
+## Get Entrez Gene IDs
+
+```{r}
+#NON_SURGICAL_50
+myDiff50.tile.NS.annot$cgids <- gsub('\\.\\d+$', '',myDiff50.tile.NS.annot$TSS_gene_id)
+listDatasets(mart=useMart("ensembl"), verbose = FALSE)
+mart <- useDataset("hsapiens_gene_ensembl", 
+                   useMart("ensembl",
+                           host="https://useast.ensembl.org"))
+genes.myDiff50.tile.NS.annot <- getBM(
+  filters="ensembl_gene_id",
+  attributes=c("ensembl_gene_id", "entrezgene_id"),
+  values=myDiff50.tile.NS.annot$cgids,
+  mart=mart)
+
+#sURGICAL_50
+myDiff50.tile.S.annot$cgids <- gsub('\\.\\d+$', '',myDiff50.tile.S.annot$TSS_gene_id)
+listDatasets(mart=useMart("ensembl"), verbose = FALSE)
+mart <- useDataset("hsapiens_gene_ensembl", 
+                   useMart("ensembl",
+                           host="https://useast.ensembl.org"))
+genes.myDiff50.tile.S.annot <- getBM(
+  filters="ensembl_gene_id",
+  attributes=c("ensembl_gene_id", "entrezgene_id"),
+  values=myDiff50.tile.S.annot$cgids,
+  mart=mart)
+
+```
+
+## KEGG
+
+Using `limma::kegga` over-rep analysis:
+
+```{r}
+kegg..myDiff50.tile.NS<- limma::kegga(genes.myDiff50.tile.NS.annot$entrezgene, species = "Hs")
+limma::topKEGG(kegg..myDiff50.tile.NS)
+
+kegg..myDiff50.tile.S<- limma::kegga(genes.myDiff50.tile.S.annot$entrezgene, species = "Hs")
+limma::topKEGG(kegg..myDiff5v0.tile.S)
+
+```
+
+#try clusterprofiler
+```{r}
+library(clusterProfiler)
+kegg.cp.myDiff50.tile.NS <- enrichKEGG(gene = as.character(genes.myDiff50.tile.NS.annot$entrezgene),
+                      keyType = "ncbi-geneid",
+                      pvalueCutoff= 0.1,
+                      organism = "hsa")
+
+kegg.cp.myDiff50.tile.S <- enrichKEGG(gene = as.character(genes.myDiff50.tile.S.annot$entrezgene),
+                      keyType = "ncbi-geneid",
+                      pvalueCutoff= 0.1,
+                      organism = "hsa")
+
+```
+
+#Creat figure 6 
+```{r}
+p.nonsurgical <- dotplot(kegg.cp.non_surgical_50, color = "pvalue", showCategory = 10, font.size = 16)
+p.nonsurgical + theme(axis.text.x = element_text(angle=90, hjust=1))
+k.ns.dot <- p.nonsurgical + theme(axis.text.x = element_text(angle=90, hjust=1))
+p.surgical <- dotplot(kegg.cp.surgical_50, color = "pvalue", showCategory = 10, font.size = 16)
+p.surgical + theme(axis.text.x = element_text(angle=90, hjust=1))
+k.s.dot <- p.surgical + theme(axis.text.x = element_text(angle=90, hjust=1))
+pdf("./DML/2023-ns-s-DML-Only-KEGG_Enrichment_COMBINED.pdf", height = 7, width = 14)
+ggarrange( k.ns.dot, k.s.dot,labels = c("(A)", "(B)"), nrow = 1,ncol = 2)
+```
+
+
+
+# limma results
+```{r}
+go.ns_50 <- limma::goana(genes.non_surgical_50$entrezgene, species = "Hs")
+limma::topGO(go.ns_50, ontology = 'MF')
+
+go.s_50 <- limma::goana(genes.surgical_50$entrezgene, species = "Hs")
+limma::topGO(go.s_50, ontology = 'MF')
+```
+
+# Create figure 7
+```{r}
+library(org.Hs.eg.db)
+ego.ns <- enrichGO(gene          = genes.non_surgical_50$entrezgene_id,
+                #universe      = names(geneList),
+                OrgDb         = org.Hs.eg.db,
+                ont           = "BP",
+                pAdjustMethod = "BH",
+                pvalueCutoff  = 1,
+                qvalueCutoff  = 1,
+        readable      = TRUE)
+
+ego.s <- enrichGO(gene          = genes.surgical_50$entrezgene_id,
+                #universe      = names(geneList),
+                OrgDb         = org.Hs.eg.db,
+                ont           = "BP",
+                pAdjustMethod = "BH",
+                pvalueCutoff  = 1,
+                qvalueCutoff  = 1,
+        readable      = TRUE)
+
+
+barplot(ego.ns, color = "pvalue", showCategory = 10, font = 16)
+p.ns.bar <- barplot(ego.ns, color = "pvalue", showCategory = 10, font = 16)
+barplot(ego.s, color = "pvalue", showCategory = 30, font = 12)
+p.s.bar <- barplot(ego.s, color = "pvalue", showCategory = 10, font = 16)
+
+pdf("./DML/2023-ns-s-DML-Only-GO_Enrichment.pdf", height = 7, width =15)
+ggarrange(p.ns.bar, p.s.bar,labels = c("(C)", "(D)"), nrow = 1,ncol = 2)
+```
+
+
+#supplementary figure 3
+
+```{r}
+allDataPCA <- PCASamples(Unitedfiles, obj.return = TRUE) 
+
+pdf("./DML/2023-All-Data-PCA_COV10.pdf", width = 11, height = 8.5)
+fig_allDataPCA <- ordiplot(allDataPCA, choices = c(1, 2), type = "none", display = "sites", cex = 0.5, xlab = "", ylab = "", xaxt = "n", yaxt = "n") 
+points(fig_allDataPCA, "sites", col = c(rep(plotColors3[2], times = 3), rep("#FF8080", times = 2), rep("#5CD65C", times = 3), rep(plotColors3[7], times = 2)), pch = c(rep(15, times = 3), rep(16, times = 2),rep(17, times = 3), rep(18, times = 2)), cex = 2) 
+
+```
+
+
+# Figure 3
+```{r}
+
+annotated50.info.non_surgical <- suppressWarnings(annotateWithGeneParts(as(diffMethStats_non_surgical_50,"GRanges"),
+                                                         gene.obj))
+annotated50.info.surgical <- suppressWarnings(annotateWithGeneParts(as(diffMethStats_surgical_50,"GRanges"),
+                                                         gene.obj))
+
+jpeg(filename = "./DML/Locations_2023-Annotated_pie_chart.jpeg", width =11, height = 7, units = "in", res = 300, quality = 100)
+layout(matrix(1:4,2,2, byrow = TRUE))
+plotTargetAnnotation(annotated.info.non_surgical,col=c(plotColors[3],plotColors1[10], "grey80","white"),precedence=TRUE,
+                     main="Locations of total methylated CpGs")
+plotTargetAnnotation(annotated50.info.non_surgical,col=c(plotColors[3],plotColors1[10], "grey80","white"),precedence=TRUE,
+                     main="Locations of differentially methylated CpGs")
+plotTargetAnnotation(annotated.info.surgical,col=c(plotColors[3],plotColors1[10], "grey80","white"),precedence=TRUE,
+                     main="Locations of total methylated CpGs")
+plotTargetAnnotation(annotated50.info.surgical,col=c(plotColors[3],plotColors1[10], "grey80","white"),precedence=TRUE,
+                     main="Locations of differentially methylated CpGs")
+
+
+
+```
+
+#Figure 4
+
+```{r}
+
+percMethDML_non_surgical <- percMethylation(United_non_surgical, rowids = TRUE) 
+
+percMethDML_surgical <- percMethylation(United_surgical, rowids = TRUE) 
+
+pdf("./DML/2023--DML-Only-Heatmap.pdf", height = 8.5, width = 10)
+
+heatmap.2(percMethDML_non_surgical, col = rev(plotColors3), scale = "none",
+          trace = "none", tracecol = "black",
+          labRow = FALSE, 
+          ColSideColors = c( rep("grey10", times = 5), rep("grey90", times = 4)),
+          cexRow = 0.3) 
+
+heatmap.2(percMethDML_surgical, col = rev(plotColors3), scale = "none",
+          trace = "none", tracecol = "black",
+          labRow = FALSE, 
+          ColSideColors = c( rep("grey10", times = 5), rep("grey90", times = 4)),
+          cexRow = 0.3) 
+
+```
+
+
+
+#Figure 5
+
+
+
+```{r}
+
+non_surgical_50 <- diffMethStats_filterdSNP_non_surgical_50
+surgical_50 <- diffMethStats_surgical__50
+
+non_surgical_25 <- diffMethStats_filterdSNP_non_surgical_25
+surgical_25 <- diffMethStats_surgical__25
+
+# combine the first two columns of each file put into a new file
+non_surgical_50$chr_start <- paste(non_surgical_50$chr, non_surgical_50$start, sep = "-")
+surgical_50$chr_start <- paste(surgical_50$chr,surgical_50$start,sep = "-")
+
+non_surgical_25$chr_start <- paste(non_surgical_25$chr, non_surgical_25$start, sep = "-")
+surgical_25$chr_start <- paste(surgical_25$chr,surgical_25$start,sep = "-")
+
+#cuttoff 50
+surgical_50contain <- surgical_50[which(surgical_50$chr_start %in% non_surgical_50$chr_start),]
+##cuttoff 25
+non_surgical_25contain <- non_surgical_25[which(non_surgical_25$chr_start %in% surgical_25$chr_start),]
+
+#25
+vennlist_25 <- list("surgical" =surgical_25$chr_start, "non-surgical" =non_surgical_25$chr_start)
+pdf("2023-1-25-Venn-diagram_diffMeth_25.pdf", width = 11, height = 8.5)
+venn25 <- ggvenn(vennlist_25,show_percentage = T, fill_color = c(plotColors[4],plotColors1[10],plotColors1[8]), fill_alpha = 0.5,stroke_color = "grey50", stroke_size = 1,text_size = 5)+
+  ggtitle("25% methylation difference cut- off",)+
+  theme(plot.title = element_text(hjust = 0.5,vjust = 5,face = "bold"),text = element_text(size = 12))
+
+#50
+
+vennlist_50 <- list("surgical" =surgical_50$chr_start, "non-surgical" =non_surgical_50$chr_start)
+#jpeg("2023-01-25-Venn-diagram_diffMeth_50.jpeg", width = 11, height = 8.5)
+venn50 <-ggvenn(vennlist_50,show_percentage = T, fill_color = c(plotColors[4],plotColors1[10],plotColors[8]), fill_alpha = 0.5,stroke_color = "grey50", stroke_size = 1,text_size = 5)+
+  ggtitle("50% methylation difference cut- off")+
+  theme(plot.title = element_text(hjust = 0.5,,vjust = 5,face = "bold"),text = element_text(size = 12))
+
+pdf("./DML/2023-venn.pdf", height = 5, width = 10)
+ggarrange(venn25, venn50, 
+          labels = c("(A)", "(B)"),
+          ncol = 2, nrow = 1)
+```
+
+# Obtain session information
+
+```{r}
+sessionInfo()
+ 
+```
+
+
+```
+
